@@ -157,7 +157,7 @@ static const EGLint attribs[] = {
    EGL_NONE
 };
 
-int main(int argc, char *argv[])
+int main()
 {
    EGLDisplay dpy;
    EGLContext ctx;

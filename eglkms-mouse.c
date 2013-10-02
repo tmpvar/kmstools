@@ -283,8 +283,9 @@ int main()
       goto destroy_context;
    }
    
-
-   int evfd = open("/dev/input/event13", O_RDONLY|O_NDELAY);
+   // TODO: scan for this device as it likes to change
+   //       this can probably be done via libudev
+   int evfd = open("/dev/input/event12", O_RDONLY|O_NDELAY);
    if (!evfd) {
      done = 1;
      printf("could not open event stream\n");
@@ -298,6 +299,7 @@ int main()
    }
   
    int touch = 0, first = 1;
+   uint32_t fb_id;
    unsigned int posx = 0, posy = 0;
    printf("ready to go\n");
    while (!done) {
@@ -307,21 +309,36 @@ int main()
 
        eglSwapBuffers(dpy, surface);
 
-       bo = gbm_surface_lock_front_buffer(gs);
-       handle = gbm_bo_get_handle(bo).u32;
-       stride = gbm_bo_get_stride(bo);
+       struct gbm_bo *new_bo = gbm_surface_lock_front_buffer(gs);
+       handle = gbm_bo_get_handle(new_bo).u32;
+       stride = gbm_bo_get_stride(new_bo);
+       uint32_t new_fb_id;
        if (drmModeAddFB(fd,
 	    	      kms.mode.hdisplay, kms.mode.vdisplay,
-		        24, 32, stride, handle, &kms.fb_id))
+		        24, 32, stride, handle, &new_fb_id))
        {
          fprintf(stderr, "failed to create fb\n");
          goto restore_crtc;
        }
      
        gbm_surface_release_buffer(gs, bo);
-       ret = drmModePageFlip(fd, kms.encoder->crtc_id, kms.fb_id, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+       bo = new_bo;
+       ret = drmModePageFlip(fd, kms.encoder->crtc_id, new_fb_id, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+       
+       // TODO: how important is this call?
+       // Known: gbm_surface_release/lock are the mechanisms behind
+       // selecting which surface is currently displayed
+       // It seems to work either way, but without this call, woud this
+       // bleed memory?
+       drmModeRmFB(fd, fb_id);
+
+       fb_id = new_fb_id;
        pending_flip = 1;
      } else {
+       // TODO: this needs to be moved into an event loop.
+       //       there is no reason to block, especially when
+       //       we could be preparing the backstage frame and
+       //       simulating the scene  instead.
        fd_set pending;
        FD_ZERO(&pending);
        FD_SET(fd, &pending);
@@ -338,10 +355,13 @@ int main()
      } 
      
      struct input_event mouse_event[64];
+     // TODO: while this is non-blocking, it would be better to push this into
+     //       an event loop and handle events in a callback
      int bytes = read(evfd, mouse_event, sizeof(struct input_event)*64); 
 
+     // TODO: fix issue with first touch
      if (bytes > 0) { 
-        int e;
+        unsigned int e;
         for (e=0; e<bytes/sizeof(struct input_event);e++) {
           struct input_event ev = mouse_event[e];
 
@@ -387,6 +407,7 @@ int main()
 
    printf("done\n");
 
+// TODO: I understand why this was done this way originally, but wow.
 restore_crtc:
    ret = drmModeSetCrtc(fd, saved_crtc->crtc_id, saved_crtc->buffer_id,
                         saved_crtc->x, saved_crtc->y,
@@ -397,7 +418,7 @@ restore_crtc:
 free_saved_crtc:
    drmModeFreeCrtc(saved_crtc);
 rm_fb:
-   drmModeRmFB(fd, kms.fb_id);
+   drmModeRmFB(fd, fb_id);
    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 destroy_context:
    eglDestroyContext(dpy, ctx);
